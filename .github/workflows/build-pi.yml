@@ -1,0 +1,133 @@
+name: Build and cache Pi
+
+on:
+  schedule:
+    # 每天北京时间 10:23，GitHub cron 默认使用 UTC。
+    - cron: "23 2 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-pi-stable
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Check and build Pi stable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Configure Cachix without automatic push
+        uses: cachix/cachix-action@v17
+        with:
+          name: yisusheng
+          skipPush: true
+
+      - name: Check configuration
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "::error::Missing CACHIX_AUTH_TOKEN secret"
+            exit 1
+          fi
+
+          echo "=== Nix version ==="
+          nix --version
+
+          echo "=== Cachix version ==="
+          cachix --version
+
+          echo "=== Architecture ==="
+          uname -m
+
+          echo "=== Disk space ==="
+          df -h
+
+      - name: Resolve Pi stable
+        id: pi
+        run: |
+          set -euo pipefail
+
+          echo "=== Resolve official Pi stable branch ==="
+
+          metadata="$(
+            nix flake metadata \
+              --refresh \
+              --json \
+              github:earendil-works/pi/stable
+          )"
+
+          revision="$(printf '%s' "$metadata" | jq -r '.locked.rev')"
+
+          if ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve Pi stable to a full Git commit SHA"
+            exit 1
+          fi
+
+          echo "Pi stable commit: $revision"
+
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Build official Pi package
+        env:
+          PI_REVISION: ${{ steps.pi.outputs.revision }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Build or fetch Pi ==="
+          echo "Pi commit: $PI_REVISION"
+
+          nix build \
+            --print-build-logs \
+            --out-link result \
+            "github:earendil-works/pi/${PI_REVISION}#default"
+
+          echo "=== Pi output ==="
+          readlink -f result
+
+          echo "=== Pi version ==="
+          ./result/bin/pi --version
+
+          echo "=== Runtime closure ==="
+          nix path-info \
+            --recursive \
+            --closure-size \
+            --human-readable \
+            ./result
+
+      - name: Push Pi runtime closure to Cachix
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          PI_REVISION: ${{ steps.pi.outputs.revision }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Push Pi runtime closure ==="
+          cachix push yisusheng ./result
+
+          output_path="$(readlink -f result)"
+          pi_version="$(./result/bin/pi --version)"
+
+          echo "=== Cachix push completed ==="
+          echo "Pi version: $pi_version"
+          echo "Pi commit: $PI_REVISION"
+          echo "Pi output: $output_path"
+
+          {
+            echo "## Pi build"
+            echo
+            echo "- Version: \`$pi_version\`"
+            echo "- Commit: \`$PI_REVISION\`"
+            echo "- Output: \`$output_path\`"
+            echo "- Cachix: \`yisusheng\`"
+          } >> "$GITHUB_STEP_SUMMARY"
