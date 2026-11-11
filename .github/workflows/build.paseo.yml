@@ -1,1 +1,95 @@
+name: Build and cache Paseo
 
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build patched Paseo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Install Cachix without automatic push
+        uses: cachix/cachix-action@v17
+        with:
+          name: yisusheng
+          skipPush: true
+
+      - name: Check configuration
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "::error::Missing CACHIX_AUTH_TOKEN secret"
+            exit 1
+          fi
+
+          echo "=== Nix version ==="
+          nix --version
+
+          echo "=== Cachix version ==="
+          cachix --version
+
+          echo "=== Machine architecture ==="
+          uname -m
+
+          echo "=== Disk space ==="
+          df -h
+
+      - name: Build patched Paseo
+        run: |
+          set -euo pipefail
+
+          echo "=== Build patched Paseo ==="
+
+          nix build \
+            --impure \
+            --print-build-logs \
+            --out-link result \
+            --expr '
+              let
+                paseo = builtins.getFlake
+                  "github:getpaseo/paseo/e9f897a66a9f74cc22c993c284d5fdb46b3af4d9";
+              in
+                paseo.packages.x86_64-linux.default.overrideAttrs (old: {
+                  npmDeps = old.npmDeps.overrideAttrs (_: {
+                    NIX_NPM_REGISTRY_OVERRIDES = builtins.toJSON {
+                      "registry.npmjs.org" = "https://mirrors.cloud.tencent.com/npm";
+                    };
+                  });
+
+                  preBuild = (old.preBuild or "") + "\nnpm run postinstall\n";
+                })
+            '
+
+          echo "=== Paseo output ==="
+          readlink -f result
+
+          echo "=== Runtime closure size ==="
+          nix path-info --recursive --closure-size --human-readable ./result
+
+      - name: Push Paseo runtime closure to Cachix
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Push Paseo runtime closure ==="
+          cachix push yisusheng ./result
+
+          echo "=== Cachix push completed ==="
+          echo "Paseo output:"
+          readlink -f result
