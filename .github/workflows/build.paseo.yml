@@ -65,12 +65,6 @@ jobs:
                   "github:getpaseo/paseo/e9f897a66a9f74cc22c993c284d5fdb46b3af4d9";
               in
                 paseo.packages.x86_64-linux.default.overrideAttrs (old: {
-                  npmDeps = old.npmDeps.overrideAttrs (_: {
-                    NIX_NPM_REGISTRY_OVERRIDES = builtins.toJSON {
-                      "registry.npmjs.org" = "https://mirrors.cloud.tencent.com/npm";
-                    };
-                  });
-
                   preBuild = (old.preBuild or "") + "\nnpm run postinstall\n";
                 })
             '
